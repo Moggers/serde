@@ -2,6 +2,8 @@ use proc_macro2::{Literal, Span, TokenStream};
 use quote::ToTokens;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
+use syn::Expr as SynExpr;
+use syn::Lit as SynLit;
 use syn::{self, Ident, Index, Member};
 
 use bound;
@@ -1162,6 +1164,19 @@ fn prepare_enum_variant_enum(
                 variant.attrs.name().deserialize_name(),
                 field_i(i),
                 variant.attrs.aliases(),
+                match &variant.original.discriminant {
+                    Some((_, d)) => match d {
+                        SynExpr::Lit(l) => match &l.lit {
+                            SynLit::Int(i) => match i.base10_parse() {
+                                Ok(v) => Some(v),
+                                Err(_) => None,
+                            },
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    None => None,
+                },
             )
         })
         .collect();
@@ -1169,7 +1184,7 @@ fn prepare_enum_variant_enum(
     let other_idx = variants.iter().position(|variant| variant.attrs.other());
 
     let variants_stmt = {
-        let variant_names = variant_names_idents.iter().map(|(name, _, _)| name);
+        let variant_names = variant_names_idents.iter().map(|(name, _, _, _)| name);
         quote! {
             const VARIANTS: &'static [&'static str] = &[ #(#variant_names),* ];
         }
@@ -1867,13 +1882,13 @@ fn deserialize_untagged_newtype_variant(
 }
 
 fn deserialize_generated_identifier(
-    fields: &[(String, Ident, Vec<String>)],
+    fields: &[(String, Ident, Vec<String>, Option<u64>)],
     cattrs: &attr::Container,
     is_variant: bool,
     other_idx: Option<usize>,
 ) -> Fragment {
     let this = quote!(__Field);
-    let field_idents: &Vec<_> = &fields.iter().map(|(_, ident, _)| ident).collect();
+    let field_idents: &Vec<_> = &fields.iter().map(|(_, ident, _, _)| ident).collect();
 
     let (ignore_variant, fallthrough) = if !is_variant && cattrs.has_flatten() {
         let ignore_variant = quote!(__other(_serde::private::de::Content<'de>),);
@@ -1975,11 +1990,24 @@ fn deserialize_custom_identifier(
                 variant.attrs.name().deserialize_name(),
                 variant.ident.clone(),
                 variant.attrs.aliases(),
+                match &variant.original.discriminant {
+                    Some((_, d)) => match d {
+                        SynExpr::Lit(l) => match &l.lit {
+                            SynLit::Int(i) => match i.base10_parse() {
+                                Ok(v) => Some(v),
+                                Err(_) => None,
+                            },
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    None => None,
+                },
             )
         })
         .collect();
 
-    let names = names_idents.iter().map(|(name, _, _)| name);
+    let names = names_idents.iter().map(|(name, _, _, _)| name);
 
     let names_const = if fallthrough.is_some() {
         None
@@ -2030,13 +2058,16 @@ fn deserialize_custom_identifier(
 
 fn deserialize_identifier(
     this: &TokenStream,
-    fields: &[(String, Ident, Vec<String>)],
+    // 2020-05-03 Matthew Kramara
+    // Bang in a u64 to hold our discriminant, since we can't rely on
+    // the 0u64.. indexing to line up with our main_constructor vec
+    fields: &[(String, Ident, Vec<String>, Option<u64>)],
     is_variant: bool,
     fallthrough: Option<TokenStream>,
     collect_other_fields: bool,
 ) -> Fragment {
     let mut flat_fields = Vec::new();
-    for (_, ident, aliases) in fields {
+    for (_, ident, aliases, _) in fields {
         flat_fields.extend(aliases.iter().map(|alias| (alias, ident)))
     }
 
@@ -2055,7 +2086,16 @@ fn deserialize_identifier(
         .collect();
     let main_constructors: &Vec<_> = &fields
         .iter()
-        .map(|(_, ident, _)| quote!(#this::#ident))
+        .map(|(_, ident, _, _)| quote!(#this::#ident))
+        .collect();
+
+    let variant_indices: Vec<u64> = fields
+        .iter()
+        .enumerate()
+        .map(|(t, (_, _, _, v))| match v {
+            Some(a) => *a,
+            None => t as u64,
+        })
         .collect();
 
     let expecting = if is_variant {
@@ -2110,7 +2150,6 @@ fn deserialize_identifier(
         }
     };
 
-    let variant_indices = 0_u64..;
     let fallthrough_msg = format!("{} index 0 <= i < {}", index_expecting, fields.len());
     let visit_other = if collect_other_fields {
         quote! {
@@ -2312,12 +2351,13 @@ fn deserialize_struct_as_struct_visitor(
                 field.attrs.name().deserialize_name(),
                 field_i(i),
                 field.attrs.aliases(),
+                None,
             )
         })
         .collect();
 
     let fields_stmt = {
-        let field_names = field_names_idents.iter().map(|(name, _, _)| name);
+        let field_names = field_names_idents.iter().map(|(name, _, _, _)| name);
         quote_block! {
             const FIELDS: &'static [&'static str] = &[ #(#field_names),* ];
         }
@@ -2345,6 +2385,7 @@ fn deserialize_struct_as_map_visitor(
                 field.attrs.name().deserialize_name(),
                 field_i(i),
                 field.attrs.aliases(),
+                None,
             )
         })
         .collect();
@@ -2589,12 +2630,13 @@ fn deserialize_struct_as_struct_in_place_visitor(
                 field.attrs.name().deserialize_name(),
                 field_i(i),
                 field.attrs.aliases(),
+                None,
             )
         })
         .collect();
 
     let fields_stmt = {
-        let field_names = field_names_idents.iter().map(|(name, _, _)| name);
+        let field_names = field_names_idents.iter().map(|(name, _, _, _)| name);
         quote_block! {
             const FIELDS: &'static [&'static str] = &[ #(#field_names),* ];
         }

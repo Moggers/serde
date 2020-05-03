@@ -487,11 +487,19 @@ fn serialize_variant(
 fn serialize_externally_tagged_variant(
     params: &Parameters,
     variant: &Variant,
-    variant_index: u32,
+    mut variant_index: u32,
     cattrs: &attr::Container,
 ) -> Fragment {
     let type_name = cattrs.name().serialize_name();
     let variant_name = variant.attrs.name().serialize_name();
+    if let Some((_eq, syn::Expr::Lit(lit))) = &variant.original.discriminant {
+        if let syn::Lit::Int(disc) = &lit.lit {
+            disc.base10_parse::<u32>().and_then(|x| {
+                variant_index = x;
+                Ok(())
+            }).unwrap();
+        }
+    }
 
     if let Some(path) = variant.attrs.serialize_with() {
         let ser = wrap_serialize_variant_with(params, path, variant);
